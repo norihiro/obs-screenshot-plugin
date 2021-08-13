@@ -1,0 +1,95 @@
+name: build obs plugin
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+env:
+  PLUGIN_NAME: obs-screenshot-filter
+  OBS_VERSION: 27.0.1
+
+jobs:
+  windows:
+    name: Windows
+    runs-on: [windows-latest]
+    env:
+      QT_VERSION: '5.15.2'
+      CMAKE_GENERATOR: "Visual Studio 16 2019"
+      CMAKE_SYSTEM_VERSION: "10.0.18363.657"
+      WINDOWS_DEPS_VERSION: '2019'
+    steps:
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v1.0.2
+      - name: Checkout obs
+        uses: actions/checkout@v2.3.3
+        with:
+          repository: obsproject/obs-studio
+          ref: ${{ env.OBS_VERSION }}
+          submodules: 'recursive'
+      - name: Checkout plugin
+        uses: actions/checkout@v2.3.3
+        with:
+          path: plugins/${{ env.PLUGIN_NAME }}
+      - name: Add plugin to obs cmake
+        shell: cmd
+        run: echo add_subdirectory(${{ env.PLUGIN_NAME }}) >> plugins/CMakeLists.txt
+      - name: Fetch Git Tags
+        run: git fetch --prune --tags --unshallow
+      - name: 'Restore QT dependency from cache'
+        id: qt-cache
+        uses: actions/cache@v2.1.2
+        env:
+          CACHE_NAME: 'qt-cache'
+        with:
+          path: ${{ github.workspace }}/cmbuild/QT
+          key: ${{ runner.os }}-pr-${{ env.CACHE_NAME }}-${{ env.QT_VERSION }}
+      - name: 'Restore pre-built dependencies from cache'
+        id: deps-cache
+        uses: actions/cache@v2.1.2
+        env:
+          CACHE_NAME: 'deps-cache'
+        with:
+          path: ${{ github.workspace }}/cmbuild/deps
+          key: ${{ runner.os }}-pr-${{ env.CACHE_NAME }}-${{ env.WINDOWS_DEPS_VERSION }}
+      - name: 'Install prerequisite: QT'
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -kLO https://cdn-fastly.obsproject.com/downloads/Qt_${{ env.QT_VERSION }}.7z -f --retry 5 -C -
+          7z x Qt_${{ env.QT_VERSION }}.7z -o"${{ github.workspace }}/cmbuild/QT"
+      - name: 'Install prerequisite: Pre-built dependencies'
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -kLO https://cdn-fastly.obsproject.com/downloads/dependencies${{ env.WINDOWS_DEPS_VERSION }}.zip -f --retry 5 -C -
+          7z x dependencies${{ env.WINDOWS_DEPS_VERSION }}.zip -o"${{ github.workspace }}/cmbuild/deps"
+      - name: Configure
+        run: |
+          mkdir ./package
+          mkdir ./build32
+          cd ./build32
+          cmake -G"${{ env.CMAKE_GENERATOR }}" -A"Win32" -DCMAKE_SYSTEM_VERSION="${{ env.CMAKE_SYSTEM_VERSION }}" -DBUILD_BROWSER=false -DBUILD_VST=false -DBUILD_VIRTUALCAM=false -DBUILD_CAPTIONS=false -DCOMPILE_D3D12_HOOK=false -DENABLE_SCRIPTING=false -DDepsPath="${{ github.workspace }}/cmbuild/deps/win32" -DQTDIR="${{ github.workspace }}/cmbuild/QT/${{ env.QT_VERSION }}/msvc2019" -DCOPIED_DEPENDENCIES=FALSE -DCOPY_DEPENDENCIES=TRUE ..
+          cd ..
+          mkdir ./build64
+          cd ./build64
+          cmake -G"${{ env.CMAKE_GENERATOR }}" -A"x64" -DCMAKE_SYSTEM_VERSION="${{ env.CMAKE_SYSTEM_VERSION }}" -DBUILD_BROWSER=false -DBUILD_VST=false -DBUILD_VIRTUALCAM=false -DBUILD_CAPTIONS=false -DCOMPILE_D3D12_HOOK=false -DENABLE_SCRIPTING=false -DDepsPath="${{ github.workspace }}/cmbuild/deps/win64" -DQTDIR="${{ github.workspace }}/cmbuild/QT/${{ env.QT_VERSION }}/msvc2019_64" -DCOPIED_DEPENDENCIES=FALSE -DCOPY_DEPENDENCIES=TRUE ..
+      - name: "Build 32-bit"
+        run: cmake --build build32 -t ${{ env.PLUGIN_NAME }} --config RelWithDebInfo
+      - name: "Build 64-bit"
+        run: cmake --build build64 -t ${{ env.PLUGIN_NAME }} --config RelWithDebInfo
+      - name: Package
+        if: success()
+        run: |
+          $env:FILE_DATE=(Get-Date -UFormat "%F")
+          $env:FILE_NAME="${{ env.PLUGIN_NAME }}-${env:FILE_DATE}-${{ github.sha }}-windows"
+          echo "FILE_NAME=${env:FILE_NAME}" >> ${env:GITHUB_ENV}
+          robocopy .\build32\plugins\${{env.PLUGIN_NAME}}\RelWithDebInfo\ .\package\obs-plugins\32bit ${{ env.PLUGIN_NAME }}.* /E /XF .gitignore
+          robocopy .\build64\plugins\${{env.PLUGIN_NAME}}\RelWithDebInfo\ .\package\obs-plugins\64bit ${{ env.PLUGIN_NAME }}.* /E /XF .gitignore
+          robocopy .\build64\rundir\RelWithDebInfo\data\obs-plugins\${{ env.PLUGIN_NAME }}\ .\package\data\obs-plugins\${{ env.PLUGIN_NAME }}\ /E /XF .gitignore
+          exit 0
+      - name: Publish zip
+        if: success()
+        uses: actions/upload-artifact@v2.2.0
+        with:
+          name: '${{ env.FILE_NAME }}'
+          path: package/*

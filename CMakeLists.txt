@@ -18,4 +18,3 @@ target_link_libraries(obs-screenshot-filter
 )
 
 set_target_properties(obs-screenshot-filter PROPERTIES FOLDER "plugins")
-install_obs_plugin_with_data(obs-screenshot-filter data)
