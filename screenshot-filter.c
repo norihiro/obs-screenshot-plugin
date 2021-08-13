@@ -847,8 +847,8 @@ static void capture_key_callback(void *data, obs_hotkey_id id,
 {
 	struct screenshot_filter_data *filter = data;
 	char *filter_name = obs_source_get_name(filter->context);
-	info("Got capture_key pressed for %s, id: %d, key: %s, pressed: %d",
-	     filter_name, id, key->name, pressed);
+	info("Got capture_key pressed for %s, id: %d, pressed: %d",
+	     filter_name, id, pressed);
 
 	if (id != filter->capture_hotkey_id || !pressed)
 		return;
