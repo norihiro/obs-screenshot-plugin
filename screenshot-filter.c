@@ -8,10 +8,10 @@
 #include <libswscale/swscale.h>
 
 OBS_DECLARE_MODULE()
-OBS_MODULE_USE_DEFAULT_LOCALE("screenshot-filter", "en-US")
+OBS_MODULE_USE_DEFAULT_LOCALE("screenshot-filter-jpeg", "en-US")
 
 #define do_log(level, format, ...) \
-	blog(level, "[screenshot-filter] " format, ##__VA_ARGS__)
+	blog(level, "[screenshot-filter-jpeg] " format, ##__VA_ARGS__)
 
 #define warn(format, ...) do_log(LOG_WARNING, format, ##__VA_ARGS__)
 #define info(format, ...) do_log(LOG_INFO, format, ##__VA_ARGS__)
@@ -138,7 +138,7 @@ static DWORD CALLBACK write_images_thread(struct screenshot_filter_data *filter)
 static const char *screenshot_filter_get_name(void *unused)
 {
 	UNUSED_PARAMETER(unused);
-	return "Screenshot Filter";
+	return "Screenshot Filter JPEG";
 }
 
 static bool is_dest_modified(obs_properties_t *props, obs_property_t *unused,
@@ -325,9 +325,9 @@ static void make_hotkey(struct screenshot_filter_data *filter)
 
 	char hotkey_name[256];
 	char hotkey_description[512];
-	snprintf(hotkey_name, 255, "Screenshot Filter.%s.%s", parent_name,
+	snprintf(hotkey_name, 255, "Screenshot Filter JPEG.%s.%s", parent_name,
 		 filter_name);
-	snprintf(hotkey_description, 512, "%s: Take screenshot of \"%s\"",
+	snprintf(hotkey_description, 512, "%s: Take JPEG screenshot of \"%s\"",
 		 filter_name, parent_name);
 
 	filter->capture_hotkey_id = obs_hotkey_register_frontend(
@@ -580,7 +580,7 @@ static bool write_image(const char *destination, uint8_t *image_data_ptr,
 	if (image_data_ptr == NULL)
 		goto err_no_image_data;
 
-	AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_PNG);
+	AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_JPEG2000);
 	if (codec == NULL)
 		goto err_png_codec_not_found;
 
@@ -623,7 +623,7 @@ static bool write_image(const char *destination, uint8_t *image_data_ptr,
 	ret = avcodec_encode_video2(codec_context, &pkt, frame, &got_output);
 	if (ret == 0 && got_output) {
 		success = write_data(destination, pkt.data, pkt.size,
-				     "image/png", width, height,
+				     "image/jpeg", width, height,
 				     destination_type);
 		av_free_packet(&pkt);
 	}
@@ -712,9 +712,9 @@ static bool write_data(char *destination, uint8_t *data, size_t len,
 				}
 				repeat_count++;
 
-				if (!strcmp(content_type, "image/png")) {
+				if (!strcmp(content_type, "image/jpeg")) {
 					dest_length = snprintf(
-						file_destination, 259, "%s.png",
+						file_destination, 259, "%s.jpeg",
 						file_destination);
 				}
 
@@ -859,8 +859,9 @@ static void capture_key_callback(void *data, obs_hotkey_id id,
 	ReleaseMutex(filter->mutex);
 }
 
+static
 struct obs_source_info screenshot_filter = {
-	.id = "screenshot_filter",
+	.id = "screenshot_filter_jpeg",
 
 	.type = OBS_SOURCE_TYPE_FILTER,
 	.output_flags = OBS_SOURCE_VIDEO,
