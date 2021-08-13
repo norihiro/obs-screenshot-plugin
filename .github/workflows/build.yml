@@ -7,7 +7,7 @@ on:
     branches: [ master, jpeg ]
 
 env:
-  PLUGIN_NAME: obs-screenshot-filter
+  PLUGIN_NAME: obs-screenshot-filter-jpeg
   OBS_VERSION: 27.0.1
 
 jobs:
