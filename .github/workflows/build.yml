@@ -27,7 +27,6 @@ jobs:
         with:
           repository: obsproject/obs-studio
           ref: ${{ env.OBS_VERSION }}
-          submodules: 'recursive'
       - name: Checkout plugin
         uses: actions/checkout@v2.3.3
         with:
