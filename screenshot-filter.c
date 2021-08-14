@@ -715,6 +715,8 @@ static bool write_image(struct screenshot_filter_data *filter, uint8_t *image_da
 	codec_context->height = cheight;
 	codec_context->time_base = (AVRational){1, 25};
 	codec_context->pix_fmt = AV_PIX_FMT_YUVJ444P;
+	codec_context->sample_aspect_ratio.num = 1;
+	codec_context->sample_aspect_ratio.den = 1;
 
 	if (avcodec_open2(codec_context, codec, NULL) != 0)
 		goto err_png_encoder_open;
