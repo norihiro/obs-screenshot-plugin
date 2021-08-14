@@ -832,9 +832,8 @@ static bool write_data(const char *destination, uint8_t *data, size_t len,
 				repeat_count++;
 
 				if (!strcmp(content_type, "image/jpeg")) {
-					dest_length = snprintf(
-						file_destination, 259, "%s.jpeg",
-						file_destination);
+					if (strlen(file_destination)+4 < sizeof(file_destination))
+						strcat(file_destination, ".jpg");
 				}
 
 				if (dest_length <= 0) {
@@ -844,11 +843,13 @@ static bool write_data(const char *destination, uint8_t *data, size_t len,
 				of = fopen(file_destination, "rb");
 				if (of != NULL) {
 					fclose(of);
+					blog(LOG_ERROR, "write_data: file exists %s", file_destination);
 					continue;
 				}
 
 				of = fopen(file_destination, "wb");
 				if (of == NULL) {
+					blog(LOG_ERROR, "write_data: cannot open %s", file_destination);
 					continue;
 				} else {
 					fwrite(data, 1, len, of);
