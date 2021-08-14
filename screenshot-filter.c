@@ -34,9 +34,9 @@ OBS_MODULE_USE_DEFAULT_LOCALE("screenshot-filter-jpeg", "en-US")
 static void capture_key_callback(void *data, obs_hotkey_id id,
 				 obs_hotkey_t *key, bool pressed);
 
-static bool write_image(const char *destination, uint8_t *image_data_ptr,
-			int image_data_linesize, uint32_t width,
-			uint32_t height, int destination_type);
+struct screenshot_filter_data;
+static bool write_image(struct screenshot_filter_data *filter, uint8_t *image_data_ptr,
+			int image_data_linesize, uint32_t width, uint32_t height);
 static bool write_data(const char *destination, uint8_t *data, size_t len,
 		       const char *content_type, uint32_t width, uint32_t height,
 		       int destination_type);
@@ -89,6 +89,7 @@ struct screenshot_filter_data {
 	uint32_t height;
 	gs_texrender_t *texrender;
 	gs_stagesurf_t *staging_texture;
+	uint32_t resize_w, resize_h;
 
 	uint8_t *data;
 	uint32_t linesize;
@@ -164,8 +165,7 @@ static void *write_images_thread(void *filter_)
 					   "image/rgba32", width, height,
 					   destination_type);
 			else
-				write_image(destination, data, linesize, width,
-					    height, destination_type);
+				write_image(filter, data, linesize, width, height);
 			bfree(data);
 		}
 		Sleep(200);
@@ -241,6 +241,15 @@ static bool is_timer_enable_modified(obs_properties_t *props,
 	return true;
 }
 
+static bool resize_modified(obs_properties_t *props, obs_property_t *unused, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(unused);
+	bool en = settings ? obs_data_get_bool(settings, "resize") : false;
+	obs_property_set_visible(obs_properties_get(props, "resize_w"), en);
+	obs_property_set_visible(obs_properties_get(props, "resize_h"), en);
+	return true;
+}
+
 static obs_properties_t *screenshot_filter_properties(void *data)
 {
 	UNUSED_PARAMETER(data);
@@ -288,6 +297,11 @@ static obs_properties_t *screenshot_filter_properties(void *data)
 
 	obs_properties_add_bool(props, SETTING_RAW, "Raw image");
 
+	p = obs_properties_add_bool(props, "resize", "Resize");
+	obs_property_set_modified_callback(p, resize_modified);
+	obs_properties_add_int(props, "resize_w", "Width", 16, 8192, 1);
+	obs_properties_add_int(props, "resize_h", "Height", 16, 8192, 1);
+
 	return props;
 }
 
@@ -298,6 +312,8 @@ static void screenshot_filter_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, SETTING_TIMER, false);
 	obs_data_set_default_double(settings, SETTING_INTERVAL, 2.0f);
 	obs_data_set_default_bool(settings, SETTING_RAW, false);
+	obs_data_set_default_int(settings, "resize_w", 1600);
+	obs_data_set_default_int(settings, "resize_h", 1200);
 }
 
 static void screenshot_filter_update(void *data, obs_data_t *settings)
@@ -346,6 +362,10 @@ static void screenshot_filter_update(void *data, obs_data_t *settings)
 		;
 	filter->interval = obs_data_get_double(settings, SETTING_INTERVAL);
 	filter->raw = obs_data_get_bool(settings, SETTING_RAW);
+
+	bool resize = obs_data_get_bool(settings, "resize");
+	filter->resize_w = resize ? obs_data_get_int(settings, "resize_w") : 0;
+	filter->resize_h = resize ? obs_data_get_int(settings, "resize_h") : 0;
 
 	ReleaseMutex(filter->mutex);
 }
@@ -667,9 +687,8 @@ static void screenshot_filter_render(void *data, gs_effect_t *effect)
 }
 
 // code adapted from https://github.com/obsproject/obs-studio/pull/1269 and https://stackoverflow.com/a/12563019
-static bool write_image(const char *destination, uint8_t *image_data_ptr,
-			int image_data_linesize, uint32_t width,
-			uint32_t height, int destination_type)
+static bool write_image(struct screenshot_filter_data *filter, uint8_t *image_data_ptr,
+			int image_data_linesize, uint32_t width, uint32_t height)
 {
 	bool success = false;
 
@@ -688,9 +707,12 @@ static bool write_image(const char *destination, uint8_t *image_data_ptr,
 	if (codec_context == NULL)
 		goto err_png_encoder_context_alloc;
 
+	uint32_t cwidth = filter->resize_w ? filter->resize_w : width;
+	uint32_t cheight = filter->resize_h ? filter->resize_h : height;
+
 	codec_context->bit_rate = 400000;
-	codec_context->width = width;
-	codec_context->height = height;
+	codec_context->width = cwidth;
+	codec_context->height = cheight;
 	codec_context->time_base = (AVRational){1, 25};
 	codec_context->pix_fmt = AV_PIX_FMT_YUVJ444P;
 
@@ -702,8 +724,8 @@ static bool write_image(const char *destination, uint8_t *image_data_ptr,
 		goto err_av_frame_alloc;
 
 	frame->format = codec_context->pix_fmt;
-	frame->width = width;
-	frame->height = height;
+	frame->width = cwidth;
+	frame->height = cheight;
 
 	ret = av_image_alloc(frame->data, frame->linesize, codec_context->width,
 			     codec_context->height, codec_context->pix_fmt, 4);
@@ -718,7 +740,7 @@ static bool write_image(const char *destination, uint8_t *image_data_ptr,
 	{
 		struct SwsContext *sws_ctx = sws_getContext(
 				width, height, AV_PIX_FMT_RGBA,
-				width, height, codec_context->pix_fmt,
+				cwidth, cheight, codec_context->pix_fmt,
 				SWS_BILINEAR, NULL, NULL, NULL );
 		if (!sws_ctx) {
 			goto err_sws;
@@ -735,9 +757,9 @@ static bool write_image(const char *destination, uint8_t *image_data_ptr,
 	int got_output = 0;
 	ret = avcodec_encode_video2(codec_context, &pkt, frame, &got_output);
 	if (ret == 0 && got_output) {
-		success = write_data(destination, pkt.data, pkt.size,
-				     "image/jpeg", width, height,
-				     destination_type);
+		success = write_data(filter->destination, pkt.data, pkt.size,
+				     "image/jpeg", cwidth, cheight,
+				     filter->destination_type);
 		av_free_packet(&pkt);
 	}
 
