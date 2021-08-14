@@ -676,7 +676,7 @@ static bool write_image(const char *destination, uint8_t *image_data_ptr,
 	if (image_data_ptr == NULL)
 		goto err_no_image_data;
 
-	AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_JPEG2000);
+	AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_MJPEG);
 	if (codec == NULL)
 		goto err_png_codec_not_found;
 
@@ -688,7 +688,7 @@ static bool write_image(const char *destination, uint8_t *image_data_ptr,
 	codec_context->width = width;
 	codec_context->height = height;
 	codec_context->time_base = (AVRational){1, 25};
-	codec_context->pix_fmt = AV_PIX_FMT_RGBA;
+	codec_context->pix_fmt = AV_PIX_FMT_YUVJ444P;
 
 	if (avcodec_open2(codec_context, codec, NULL) != 0)
 		goto err_png_encoder_open;
@@ -710,9 +710,22 @@ static bool write_image(const char *destination, uint8_t *image_data_ptr,
 	pkt.data = NULL;
 	pkt.size = 0;
 
-	for (uint32_t y = 0; y < height; ++y)
-		memcpy(frame->data[0] + y * width * 4,
-		       image_data_ptr + y * image_data_linesize, width * 4);
+	// convert RGBA to YUVJ444P since jpeg format cannot accept RGB
+	{
+		struct SwsContext *sws_ctx = sws_getContext(
+				width, height, AV_PIX_FMT_RGBA,
+				width, height, codec_context->pix_fmt,
+				SWS_BILINEAR, NULL, NULL, NULL );
+		if (!sws_ctx) {
+			goto err_sws;
+			info("sws_getContext failed");
+		}
+		sws_scale(sws_ctx,
+				(const uint8_t * const*)&image_data_ptr, &image_data_linesize, 0, height,
+				frame->data, frame->linesize );
+		sws_freeContext(sws_ctx);
+	}
+
 	frame->pts = 1;
 
 	int got_output = 0;
@@ -724,6 +737,7 @@ static bool write_image(const char *destination, uint8_t *image_data_ptr,
 		av_free_packet(&pkt);
 	}
 
+err_sws:
 	av_freep(frame->data);
 
 err_av_image_alloc:
