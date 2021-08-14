@@ -10,11 +10,23 @@ set(obs-screenshot-filter_SOURCES
 
 add_library(obs-screenshot-filter MODULE
       ${obs-screenshot-filter_SOURCES})
+if(WIN32)
 target_link_libraries(obs-screenshot-filter
       libobs
       wininet.lib
       ${obs-ffmpeg_PLATFORM_DEPS}
       ${FFMPEG_LIBRARIES}
 )
+else()
+target_link_libraries(obs-screenshot-filter
+      libobs
+      ${obs-ffmpeg_PLATFORM_DEPS}
+      ${FFMPEG_LIBRARIES}
+)
+endif()
+
+if(UNIX AND NOT APPLE)
+	install_obs_plugin(obs-screenshot-filter)
+endif()
 
 set_target_properties(obs-screenshot-filter PROPERTIES FOLDER "plugins")

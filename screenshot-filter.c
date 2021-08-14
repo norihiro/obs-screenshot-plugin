@@ -1,11 +1,25 @@
+#ifdef _WIN32
 #include <windows.h>
 #include <wininet.h>
 #include <obs-module.h>
+#else
+#include <obs-module.h>
+#include <pthread.h>
+#include <util/platform.h>
+#include <util/threading.h>
+#endif
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
+
+#ifdef _WIN32
+#define HAS_SHMEM // only for Windows for now
+#define HAS_PUT // only for Windows for now
+#else
+#define Sleep(ms) os_sleep_ms(ms)
+#endif
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("screenshot-filter", "en-US")
@@ -23,11 +37,14 @@ static void capture_key_callback(void *data, obs_hotkey_id id,
 static bool write_image(const char *destination, uint8_t *image_data_ptr,
 			uint32_t image_data_linesize, uint32_t width,
 			uint32_t height, int destination_type);
-static bool write_data(char *destination, uint8_t *data, size_t len,
-		       char *content_type, uint32_t width, uint32_t height,
+static bool write_data(const char *destination, uint8_t *data, size_t len,
+		       const char *content_type, uint32_t width, uint32_t height,
 		       int destination_type);
+
+#ifdef HAS_PUT
 static bool put_data(char *url, uint8_t *buf, size_t len, char *content_type,
 		     int width, int height);
+#endif
 
 #define SETTING_DESTINATION_TYPE "destination_type"
 
@@ -37,8 +54,12 @@ static bool put_data(char *url, uint8_t *buf, size_t len, char *content_type,
 #define SETTING_DESTINATION_SHMEM "destination_shmem"
 
 #define SETTING_DESTINATION_PATH_ID 0
+#ifdef HAS_PUT
 #define SETTING_DESTINATION_URL_ID 1
+#endif
+#ifdef HAS_SHMEM
 #define SETTING_DESTINATION_SHMEM_ID 2
+#endif
 #define SETTING_DESTINATION_FOLDER_ID 3
 
 #define SETTING_TIMER "timer"
@@ -48,7 +69,11 @@ static bool put_data(char *url, uint8_t *buf, size_t len, char *content_type,
 struct screenshot_filter_data {
 	obs_source_t *context;
 
+#ifdef _WIN32
 	HANDLE image_writer_thread;
+#else
+	pthread_t image_writer_thread;
+#endif
 
 	int destination_type;
 	char *destination;
@@ -63,24 +88,37 @@ struct screenshot_filter_data {
 	uint32_t width;
 	uint32_t height;
 	gs_texrender_t *texrender;
-	gs_texture_t *staging_texture;
+	gs_stagesurf_t *staging_texture;
 
 	uint8_t *data;
 	uint32_t linesize;
 	bool ready;
 
+#ifdef HAS_SHMEM
 	uint32_t index;
 	char shmem_name[256];
 	uint32_t shmem_size;
 	HANDLE shmem;
+#endif
 
+#ifdef _WIN32
 	HANDLE mutex;
+#else
+	pthread_mutex_t mutex;
+#define WaitForSingleObject(mutex, type) pthread_mutex_lock(&mutex)
+#define ReleaseMutex(mutex) pthread_mutex_unlock(&mutex)
+#endif
 	bool exit;
 	bool exited;
 };
 
-static DWORD CALLBACK write_images_thread(struct screenshot_filter_data *filter)
+#ifdef _WIN32
+static DWORD CALLBACK write_images_thread(struct screenshot_filter_data *filter_)
+#else
+static void *write_images_thread(void *filter_)
+#endif
 {
+	struct screenshot_filter_data *filter = filter_;
 	while (!filter->exit) {
 		WaitForSingleObject(filter->mutex, INFINITE);
 		// copy all props & data inside the mutex, then do the processing/write/put outside of the mutex
@@ -99,6 +137,7 @@ static DWORD CALLBACK write_images_thread(struct screenshot_filter_data *filter)
 		ReleaseMutex(filter->mutex);
 
 		if (data && width > 10 && height > 10) {
+#ifdef HAS_SHMEM
 			if (destination_type == SETTING_DESTINATION_SHMEM_ID) {
 				if (filter->shmem) {
 					uint32_t *buf =
@@ -111,21 +150,22 @@ static DWORD CALLBACK write_images_thread(struct screenshot_filter_data *filter)
 						buf[0] = width;
 						buf[1] = height;
 						buf[2] = linesize;
-						buf[3] = filter->index;
+						buf[3] = filter->index ++;
 						memcpy(&buf[4], data,
 						       linesize * height);
 					}
 
 					UnmapViewOfFile(buf);
 				}
-			} else if (raw)
+			} else
+#endif
+			if (raw)
 				write_data(destination, data, linesize * height,
 					   "image/rgba32", width, height,
 					   destination_type);
 			else
 				write_image(destination, data, linesize, width,
 					    height, destination_type);
-			filter->index += 1;
 			bfree(data);
 		}
 		Sleep(200);
@@ -153,9 +193,12 @@ static bool is_dest_modified(obs_properties_t *props, obs_property_t *unused,
 	obs_property_set_visible(obs_properties_get(props,
 						    SETTING_DESTINATION_PATH),
 				 type == SETTING_DESTINATION_PATH_ID);
+#ifdef HAS_PUT
 	obs_property_set_visible(obs_properties_get(props,
 						    SETTING_DESTINATION_URL),
 				 type == SETTING_DESTINATION_URL_ID);
+#endif
+#ifdef HAS_SHMEM
 	obs_property_set_visible(obs_properties_get(props,
 						    SETTING_DESTINATION_SHMEM),
 				 type == SETTING_DESTINATION_SHMEM_ID);
@@ -165,11 +208,15 @@ static bool is_dest_modified(obs_properties_t *props, obs_property_t *unused,
 
 	obs_property_set_visible(obs_properties_get(props, SETTING_TIMER),
 				 type != SETTING_DESTINATION_SHMEM_ID);
+#endif
 
 	bool is_timer_enable = obs_data_get_bool(settings, SETTING_TIMER);
 	obs_property_set_visible(obs_properties_get(props, SETTING_INTERVAL),
-				 is_timer_enable ||
-					 type == SETTING_DESTINATION_SHMEM_ID);
+				 is_timer_enable
+#ifdef HAS_SHMEM
+				 || type == SETTING_DESTINATION_SHMEM_ID
+#endif
+			);
 
 	return true;
 }
@@ -180,11 +227,16 @@ static bool is_timer_enable_modified(obs_properties_t *props,
 {
 	UNUSED_PARAMETER(unused);
 
+#ifdef HAS_SHMEM
 	int type = obs_data_get_int(settings, SETTING_DESTINATION_TYPE);
+#endif
 	bool is_timer_enable = obs_data_get_bool(settings, SETTING_TIMER);
 	obs_property_set_visible(obs_properties_get(props, SETTING_INTERVAL),
-				 is_timer_enable ||
-					 type == SETTING_DESTINATION_SHMEM_ID);
+				 is_timer_enable
+#ifdef HAS_SHMEM
+				 || type == SETTING_DESTINATION_SHMEM_ID
+#endif
+			);
 
 	return true;
 }
@@ -202,10 +254,14 @@ static obs_properties_t *screenshot_filter_properties(void *data)
 				  SETTING_DESTINATION_FOLDER_ID);
 	obs_property_list_add_int(p, "Output to file",
 				  SETTING_DESTINATION_PATH_ID);
+#ifdef HAS_PUT
 	obs_property_list_add_int(p, "Output to URL",
 				  SETTING_DESTINATION_URL_ID);
+#endif
+#ifdef HAS_SHMEM
 	obs_property_list_add_int(p, "Output to Named Shared Memory",
 				  SETTING_DESTINATION_SHMEM_ID);
+#endif
 
 	obs_property_set_modified_callback(p, is_dest_modified);
 	obs_properties_add_path(props, SETTING_DESTINATION_FOLDER,
@@ -245,31 +301,45 @@ static void screenshot_filter_update(void *data, obs_data_t *settings)
 	struct screenshot_filter_data *filter = data;
 
 	int type = obs_data_get_int(settings, SETTING_DESTINATION_TYPE);
-	char *path = obs_data_get_string(settings, SETTING_DESTINATION_PATH);
-	char *url = obs_data_get_string(settings, SETTING_DESTINATION_URL);
-	char *shmem_name =
+	const char *path = obs_data_get_string(settings, SETTING_DESTINATION_PATH);
+#ifdef HAS_PUT
+	const char *url = obs_data_get_string(settings, SETTING_DESTINATION_URL);
+#endif
+#ifdef HAS_SHMEM
+	const char *shmem_name =
 		obs_data_get_string(settings, SETTING_DESTINATION_SHMEM);
-	char *folder_path =
+#endif
+	const char *folder_path =
 		obs_data_get_string(settings, SETTING_DESTINATION_FOLDER);
 	bool is_timer_enabled = obs_data_get_bool(settings, SETTING_TIMER);
 
 	WaitForSingleObject(filter->mutex, INFINITE);
 
 	filter->destination_type = type;
+	bfree(filter->destination);
 	if (type == SETTING_DESTINATION_PATH_ID) {
-		filter->destination = path;
+		filter->destination = bstrdup(path);
+#ifdef HAS_PUT
 	} else if (type == SETTING_DESTINATION_URL_ID) {
-		filter->destination = url;
+		filter->destination = bstrdup(url);
+#endif
+#ifdef HAS_SHMEM
 	} else if (type == SETTING_DESTINATION_SHMEM_ID) {
-		filter->destination = shmem_name;
+		filter->destination = bstrdup(shmem_name);
+#endif
 	} else if (type == SETTING_DESTINATION_FOLDER_ID) {
-		filter->destination = folder_path;
+		filter->destination = bstrdup(folder_path);
 	}
+	else
+		filter->destination = bstrdup("");
 	info("Set destination=%s, %d", filter->destination,
 	     filter->destination_type);
 
-	filter->timer = is_timer_enabled ||
-			type == SETTING_DESTINATION_SHMEM_ID;
+	filter->timer = is_timer_enabled
+#ifdef HAS_SHMEM
+		|| type == SETTING_DESTINATION_SHMEM_ID
+#endif
+		;
 	filter->interval = obs_data_get_double(settings, SETTING_INTERVAL);
 	filter->raw = obs_data_get_bool(settings, SETTING_RAW);
 
@@ -289,18 +359,30 @@ static void *screenshot_filter_create(obs_data_t *settings,
 	filter->texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 	obs_leave_graphics();
 
+#ifdef _WIN32
 	filter->image_writer_thread = CreateThread(NULL, 0, write_images_thread,
 						   (LPVOID)filter, 0, NULL);
 	if (!filter->image_writer_thread) {
 		//error("image_writer_thread: Failed to create thread: %d", GetLastError());
 		return NULL;
 	}
-	info("Created image writer thread %d", filter);
+#else
+	if (pthread_create(&filter->image_writer_thread, NULL, write_images_thread, filter)) {
+		return NULL;
+	}
+#endif
+	info("Created image writer thread %p", filter);
 
 	filter->interval = 2.0f;
+#ifdef HAS_SHMEM
 	filter->shmem_name[0] = '\0';
+#endif
 
+#ifdef _WIN32
 	filter->mutex = CreateMutexA(NULL, FALSE, NULL);
+#else
+	pthread_mutex_init(&filter->mutex, NULL);
+#endif
 
 	obs_source_update(context, settings);
 
@@ -318,10 +400,10 @@ static void screenshot_filter_save(void *data, obs_data_t *settings)
 
 static void make_hotkey(struct screenshot_filter_data *filter)
 {
-	char *filter_name = obs_source_get_name(filter->context);
+	const char *filter_name = obs_source_get_name(filter->context);
 
 	obs_source_t *parent = obs_filter_get_parent(filter->context);
-	char *parent_name = obs_source_get_name(parent);
+	const char *parent_name = obs_source_get_name(parent);
 
 	char hotkey_name[256];
 	char hotkey_description[512];
@@ -336,7 +418,7 @@ static void make_hotkey(struct screenshot_filter_data *filter)
 
 	info("Registered hotkey on %s: %s %s, key=%d", filter_name,
 		hotkey_name, hotkey_description,
-		filter->capture_hotkey_id);
+		(int)filter->capture_hotkey_id);
 	
 }
 
@@ -351,7 +433,7 @@ static void screenshot_filter_load(void *data, obs_data_t *settings)
 		obs_data_get_array(settings, "capture_hotkey");
 	if (filter->capture_hotkey_id && obs_data_array_count(hotkeys)) {
 		info("Restoring hotkey settings for %d",
-		     filter->capture_hotkey_id);
+		     (int)filter->capture_hotkey_id);
 		obs_hotkey_load(filter->capture_hotkey_id, hotkeys);
 	}
 	obs_data_array_release(hotkeys);
@@ -383,17 +465,27 @@ static void screenshot_filter_destroy(void *data)
 		bfree(filter->data);
 	}
 
+#ifdef HAS_SHMEM
 	if (filter->shmem) {
 		CloseHandle(filter->shmem);
 	}
+#endif
+
+#ifdef _WIN32
 	ReleaseMutex(filter->mutex);
 	CloseHandle(filter->mutex);
+#else
+	pthread_mutex_destroy(&filter->mutex);
+#endif
+
+	bfree(filter->destination);
 
 	bfree(filter);
 }
 
 static void screenshot_filter_remove(void *data, obs_source_t *context)
 {
+	UNUSED_PARAMETER(context);
 	struct screenshot_filter_data *filter = data;
 	if (filter->capture_hotkey_id) {
 		obs_hotkey_unregister(filter->capture_hotkey_id);
@@ -444,7 +536,7 @@ static void screenshot_filter_tick(void *data, float t)
 		filter->staging_texture = gs_stagesurface_create(
 			filter->width, filter->height, GS_RGBA);
 		obs_leave_graphics();
-		info("Created Staging texture %d by %d: %x", width, height,
+		info("Created Staging texture %d by %d: %p", width, height,
 		     filter->staging_texture);
 
 		if (filter->data) {
@@ -456,6 +548,7 @@ static void screenshot_filter_tick(void *data, float t)
 		filter->since_last = 0.0f;
 	}
 
+#ifdef HAS_SHMEM
 	if (filter->destination_type == SETTING_DESTINATION_SHMEM_ID &&
 	    filter->destination) {
 		if (update || strncmp(filter->destination, filter->shmem_name,
@@ -479,6 +572,9 @@ static void screenshot_filter_tick(void *data, float t)
 			     filter->shmem);
 		}
 	}
+#else
+	UNUSED_PARAMETER(update);
+#endif
 
 	if (filter->timer) {
 		filter->since_last += t;
@@ -614,7 +710,7 @@ static bool write_image(const char *destination, uint8_t *image_data_ptr,
 	pkt.data = NULL;
 	pkt.size = 0;
 
-	for (int y = 0; y < height; ++y)
+	for (uint32_t y = 0; y < height; ++y)
 		memcpy(frame->data[0] + y * width * 4,
 		       image_data_ptr + y * image_data_linesize, width * 4);
 	frame->pts = 1;
@@ -655,8 +751,8 @@ err_no_image_data:
 	return success;
 }
 
-static bool write_data(char *destination, uint8_t *data, size_t len,
-		       char *content_type, uint32_t width, uint32_t height,
+static bool write_data(const char *destination, uint8_t *data, size_t len,
+		       const char *content_type, uint32_t width, uint32_t height,
 		       int destination_type)
 {
 	bool success = false;
@@ -671,6 +767,7 @@ static bool write_data(char *destination, uint8_t *data, size_t len,
 			success = true;
 		}
 	}
+#ifdef HAS_PUT
 	if (destination_type == SETTING_DESTINATION_URL_ID) {
 		if (strstr(destination, "http://") != NULL ||
 		    strstr(destination, "https://") != NULL) {
@@ -679,12 +776,20 @@ static bool write_data(char *destination, uint8_t *data, size_t len,
 					   width, height);
 		}
 	}
+#else
+	UNUSED_PARAMETER(width);
+	UNUSED_PARAMETER(height);
+#endif
 	if (destination_type == SETTING_DESTINATION_FOLDER_ID) {
 		FILE *of = fopen(destination, "rb");
 
 		if (of != NULL) {
 			fclose(of);
-		} else {
+		}
+#ifdef _WIN32
+		else
+#endif
+		{
 			time_t nowunixtime = time(NULL);
 			struct tm *nowtime = localtime(&nowunixtime);
 			char _file_destination[260];
@@ -743,6 +848,8 @@ static bool write_data(char *destination, uint8_t *data, size_t len,
 
 	return success;
 }
+
+#ifdef HAS_PUT
 static bool put_data(char *url, uint8_t *buf, size_t len, char *content_type,
 		     int width, int height)
 {
@@ -841,12 +948,14 @@ err_internet_open:
 
 	return success;
 }
+#endif
 
 static void capture_key_callback(void *data, obs_hotkey_id id,
 				 obs_hotkey_t *key, bool pressed)
 {
+	UNUSED_PARAMETER(key);
 	struct screenshot_filter_data *filter = data;
-	char *filter_name = obs_source_get_name(filter->context);
+	const char *filter_name = obs_source_get_name(filter->context);
 	info("Got capture_key pressed for %s, id: %d, pressed: %d",
 	     filter_name, id, pressed);
 
