@@ -269,10 +269,14 @@ static obs_properties_t *screenshot_filter_properties(void *data)
 				"*.*", NULL);
 	obs_properties_add_path(props, SETTING_DESTINATION_PATH, "Destination",
 				OBS_PATH_FILE_SAVE, "*.*", NULL);
+#ifdef HAS_PUT
 	obs_properties_add_text(props, SETTING_DESTINATION_URL,
 				"Destination (url)", OBS_TEXT_DEFAULT);
+#endif
+#ifdef HAS_SHMEM
 	obs_properties_add_text(props, SETTING_DESTINATION_SHMEM,
 				"Shared Memory Name", OBS_TEXT_DEFAULT);
+#endif
 
 	obs_property_t *p_enable_timer =
 		obs_properties_add_bool(props, SETTING_TIMER, "Enable timer");
