@@ -35,7 +35,7 @@ static void capture_key_callback(void *data, obs_hotkey_id id,
 				 obs_hotkey_t *key, bool pressed);
 
 static bool write_image(const char *destination, uint8_t *image_data_ptr,
-			uint32_t image_data_linesize, uint32_t width,
+			int image_data_linesize, uint32_t width,
 			uint32_t height, int destination_type);
 static bool write_data(const char *destination, uint8_t *data, size_t len,
 		       const char *content_type, uint32_t width, uint32_t height,
@@ -664,7 +664,7 @@ static void screenshot_filter_render(void *data, gs_effect_t *effect)
 
 // code adapted from https://github.com/obsproject/obs-studio/pull/1269 and https://stackoverflow.com/a/12563019
 static bool write_image(const char *destination, uint8_t *image_data_ptr,
-			uint32_t image_data_linesize, uint32_t width,
+			int image_data_linesize, uint32_t width,
 			uint32_t height, int destination_type)
 {
 	bool success = false;
@@ -972,7 +972,7 @@ static void capture_key_callback(void *data, obs_hotkey_id id,
 	struct screenshot_filter_data *filter = data;
 	const char *filter_name = obs_source_get_name(filter->context);
 	info("Got capture_key pressed for %s, id: %d, pressed: %d",
-	     filter_name, id, pressed);
+	     filter_name, (int)id, (int)pressed);
 
 	if (id != filter->capture_hotkey_id || !pressed)
 		return;
