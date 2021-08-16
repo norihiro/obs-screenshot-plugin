@@ -80,6 +80,10 @@ struct screenshot_filter_data {
 	bool timer;
 	float interval;
 	bool raw;
+	int timer_shown;
+	uint64_t at_shown_next_ns;
+	int timer_activated;
+	uint64_t at_activated_next_ns;
 	obs_hotkey_id capture_hotkey_id;
 
 	float since_last;
@@ -241,6 +245,22 @@ static bool is_timer_enable_modified(obs_properties_t *props,
 	return true;
 }
 
+static bool at_shown_modified(obs_properties_t *props, obs_property_t *unused, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(unused);
+	bool en = settings ? obs_data_get_bool(settings, "at_shown") : false;
+	obs_property_set_visible(obs_properties_get(props, "timer_shown"), en);
+	return true;
+}
+
+static bool at_activated_modified(obs_properties_t *props, obs_property_t *unused, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(unused);
+	bool en = settings ? obs_data_get_bool(settings, "at_activated") : false;
+	obs_property_set_visible(obs_properties_get(props, "timer_activated"), en);
+	return true;
+}
+
 static bool resize_modified(obs_properties_t *props, obs_property_t *unused, obs_data_t *settings)
 {
 	UNUSED_PARAMETER(unused);
@@ -296,6 +316,14 @@ static obs_properties_t *screenshot_filter_properties(void *data)
 					"Interval (seconds)", 0.25, 86400, 0.25);
 
 	obs_properties_add_bool(props, SETTING_RAW, "Raw image");
+
+	p = obs_properties_add_bool(props, "at_shown", "Screenshot at shown");
+	obs_property_set_modified_callback(p, at_shown_modified);
+	obs_properties_add_int(props, "timer_shown", "Timer after shown [s]", 0, 10, 1);
+
+	p = obs_properties_add_bool(props, "at_activated", "Screenshot at displayed on Program");
+	obs_property_set_modified_callback(p, at_activated_modified);
+	obs_properties_add_int(props, "timer_activated", "Timer after displayed [s]", 0, 10, 1);
 
 	p = obs_properties_add_bool(props, "resize", "Resize");
 	obs_property_set_modified_callback(p, resize_modified);
@@ -363,12 +391,51 @@ static void screenshot_filter_update(void *data, obs_data_t *settings)
 	filter->interval = obs_data_get_double(settings, SETTING_INTERVAL);
 	filter->raw = obs_data_get_bool(settings, SETTING_RAW);
 
+	bool at_shown = obs_data_get_bool(settings, "at_shown");
+	filter->timer_shown = at_shown ? obs_data_get_int(settings, "timer_shown") : -1;
+
+	bool at_activated = obs_data_get_bool(settings, "at_activated");
+	filter->timer_activated = at_activated ? obs_data_get_int(settings, "timer_activated") : -1;
+
 	bool resize = obs_data_get_bool(settings, "resize");
 	filter->resize_w = resize ? obs_data_get_int(settings, "resize_w") : 0;
 	filter->resize_h = resize ? obs_data_get_int(settings, "resize_h") : 0;
 
 	ReleaseMutex(filter->mutex);
 }
+
+static void screenshot_filter_shown(void *data)
+{
+	struct screenshot_filter_data *filter = data;
+
+	if (filter->timer_shown < 0)
+		return;
+
+	uint64_t cur_ns = os_gettime_ns();
+
+	WaitForSingleObject(filter->mutex, INFINITE);
+	if (!filter->at_shown_next_ns) {
+		filter->at_shown_next_ns = cur_ns + filter->timer_shown * 1000000000ULL;
+	}
+	ReleaseMutex(filter->mutex);
+}
+
+static void screenshot_filter_activated(void *data)
+{
+	struct screenshot_filter_data *filter = data;
+
+	if (filter->timer_activated < 0)
+		return;
+
+	uint64_t cur_ns = os_gettime_ns();
+
+	WaitForSingleObject(filter->mutex, INFINITE);
+	if (!filter->at_activated_next_ns) {
+		filter->at_activated_next_ns = cur_ns + filter->timer_activated * 1000000000ULL;
+	}
+	ReleaseMutex(filter->mutex);
+}
+
 
 static void *screenshot_filter_create(obs_data_t *settings,
 				      obs_source_t *context)
@@ -378,6 +445,8 @@ static void *screenshot_filter_create(obs_data_t *settings,
 	info("Created filter: %p", filter);
 
 	filter->context = context;
+	filter->timer_shown = -1;
+	filter->timer_activated = -1;
 
 	obs_enter_graphics();
 	filter->texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
@@ -605,6 +674,22 @@ static void screenshot_filter_tick(void *data, float t)
 		if (filter->since_last > filter->interval - 0.05) {
 			filter->capture = true;
 			filter->since_last = 0.0f;
+		}
+	}
+
+	if (filter->at_shown_next_ns) {
+		int64_t ns = (int64_t)(os_gettime_ns() - filter->at_shown_next_ns);
+		if (ns >= 0) {
+			filter->capture = true;
+			filter->at_shown_next_ns = 0;
+		}
+	}
+
+	if (filter->at_activated_next_ns) {
+		int64_t ns = (int64_t)(os_gettime_ns() - filter->at_activated_next_ns);
+		if (ns >= 0) {
+			filter->capture = true;
+			filter->at_activated_next_ns = 0;
 		}
 	}
 
@@ -1023,6 +1108,9 @@ struct obs_source_info screenshot_filter = {
 	.get_properties = screenshot_filter_properties,
 	.get_defaults = screenshot_filter_defaults,
 	.update = screenshot_filter_update,
+
+	.show = screenshot_filter_shown,
+	.activate = screenshot_filter_activated,
 
 	.create = screenshot_filter_create,
 	.destroy = screenshot_filter_destroy,
