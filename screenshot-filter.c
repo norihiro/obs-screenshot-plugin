@@ -196,7 +196,7 @@ static bool is_dest_modified(obs_properties_t *props, obs_property_t *unused,
 {
 	UNUSED_PARAMETER(unused);
 
-	int type = obs_data_get_int(settings, SETTING_DESTINATION_TYPE);
+	int type = (int)obs_data_get_int(settings, SETTING_DESTINATION_TYPE);
 	obs_property_set_visible(obs_properties_get(props,
 						    SETTING_DESTINATION_FOLDER),
 				 type == SETTING_DESTINATION_FOLDER_ID);
@@ -238,7 +238,7 @@ static bool is_timer_enable_modified(obs_properties_t *props,
 	UNUSED_PARAMETER(unused);
 
 #ifdef HAS_SHMEM
-	int type = obs_data_get_int(settings, SETTING_DESTINATION_TYPE);
+	int type = (int)obs_data_get_int(settings, SETTING_DESTINATION_TYPE);
 #endif
 	bool is_timer_enable = obs_data_get_bool(settings, SETTING_TIMER);
 	obs_property_set_visible(obs_properties_get(props, SETTING_INTERVAL),
@@ -366,7 +366,7 @@ static void screenshot_filter_update(void *data, obs_data_t *settings)
 {
 	struct screenshot_filter_data *filter = data;
 
-	int type = obs_data_get_int(settings, SETTING_DESTINATION_TYPE);
+	int type = (int)obs_data_get_int(settings, SETTING_DESTINATION_TYPE);
 	const char *path = obs_data_get_string(settings, SETTING_DESTINATION_PATH);
 #ifdef HAS_PUT
 	const char *url = obs_data_get_string(settings, SETTING_DESTINATION_URL);
@@ -406,21 +406,21 @@ static void screenshot_filter_update(void *data, obs_data_t *settings)
 		|| type == SETTING_DESTINATION_SHMEM_ID
 #endif
 		;
-	filter->interval = obs_data_get_double(settings, SETTING_INTERVAL);
+	filter->interval = (float)obs_data_get_double(settings, SETTING_INTERVAL);
 	filter->raw = obs_data_get_bool(settings, SETTING_RAW);
 
 	bool at_shown = obs_data_get_bool(settings, "at_shown");
-	filter->timer_shown = at_shown ? obs_data_get_int(settings, "timer_shown") : -1;
+	filter->timer_shown = at_shown ? (int)obs_data_get_int(settings, "timer_shown") : -1;
 
 	bool at_previewed = obs_data_get_bool(settings, "at_previewed");
-	filter->timer_previewed = at_previewed ? obs_data_get_int(settings, "timer_previewed") : -1;
+	filter->timer_previewed = at_previewed ? (int)obs_data_get_int(settings, "timer_previewed") : -1;
 
 	bool at_activated = obs_data_get_bool(settings, "at_activated");
-	filter->timer_activated = at_activated ? obs_data_get_int(settings, "timer_activated") : -1;
+	filter->timer_activated = at_activated ? (int)obs_data_get_int(settings, "timer_activated") : -1;
 
 	bool resize = obs_data_get_bool(settings, "resize");
-	filter->resize_w = resize ? obs_data_get_int(settings, "resize_w") : 0;
-	filter->resize_h = resize ? obs_data_get_int(settings, "resize_h") : 0;
+	filter->resize_w = resize ? (uint32_t)obs_data_get_int(settings, "resize_w") : 0;
+	filter->resize_h = resize ? (uint32_t)obs_data_get_int(settings, "resize_h") : 0;
 
 	ReleaseMutex(filter->mutex);
 }
