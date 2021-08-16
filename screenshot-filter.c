@@ -148,6 +148,7 @@ static void *write_images_thread(void *filter_)
 		ReleaseMutex(filter->mutex);
 
 		if (data && width > 10 && height > 10) {
+			blog(LOG_INFO, "write_images_thread: got data width=%d height=%d", width, height);
 #ifdef HAS_SHMEM
 			if (destination_type == SETTING_DESTINATION_SHMEM_ID) {
 				if (filter->shmem) {
@@ -778,6 +779,7 @@ static void screenshot_filter_tick(void *data, float t)
 		if (filter->since_last > filter->interval - 0.05) {
 			filter->capture = true;
 			filter->since_last = 0.0f;
+			blog(LOG_INFO, "request capture for timer");
 		}
 	}
 
@@ -786,6 +788,7 @@ static void screenshot_filter_tick(void *data, float t)
 		if (ns >= 0) {
 			filter->capture = true;
 			filter->at_shown_next_ns = 0;
+			blog(LOG_INFO, "request capture at shown");
 		}
 	}
 
@@ -794,6 +797,7 @@ static void screenshot_filter_tick(void *data, float t)
 		if (ns >= 0) {
 			filter->capture = true;
 			filter->at_previewed_next_ns = 0;
+			blog(LOG_INFO, "request capture at preview");
 		}
 	}
 
@@ -802,6 +806,7 @@ static void screenshot_filter_tick(void *data, float t)
 		if (ns >= 0) {
 			filter->capture = true;
 			filter->at_activated_next_ns = 0;
+			blog(LOG_INFO, "request capture at activated");
 		}
 	}
 
