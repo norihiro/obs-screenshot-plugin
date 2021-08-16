@@ -62,17 +62,20 @@ jobs:
         run: |
           curl -kLO https://cdn-fastly.obsproject.com/downloads/dependencies${{ env.WINDOWS_DEPS_VERSION }}.zip -f --retry 5 -C -
           7z x dependencies${{ env.WINDOWS_DEPS_VERSION }}.zip -o"${{ github.workspace }}/cmbuild/deps"
-      - name: Configure
+      - name: Configure 32-bit
+        if: github.event_name != 'pull_request'
         run: |
-          mkdir ./package
           mkdir ./build32
           cd ./build32
           cmake -G"${{ env.CMAKE_GENERATOR }}" -A"Win32" -DCMAKE_SYSTEM_VERSION="${{ env.CMAKE_SYSTEM_VERSION }}" -DBUILD_BROWSER=false -DBUILD_VST=false -DBUILD_VIRTUALCAM=false -DBUILD_CAPTIONS=false -DCOMPILE_D3D12_HOOK=false -DENABLE_SCRIPTING=false -DDepsPath="${{ github.workspace }}/cmbuild/deps/win32" -DQTDIR="${{ github.workspace }}/cmbuild/QT/${{ env.QT_VERSION }}/msvc2019" -DCOPIED_DEPENDENCIES=FALSE -DCOPY_DEPENDENCIES=TRUE ..
           cd ..
+      - name: Configure 64-bit
+        run: |
           mkdir ./build64
           cd ./build64
           cmake -G"${{ env.CMAKE_GENERATOR }}" -A"x64" -DCMAKE_SYSTEM_VERSION="${{ env.CMAKE_SYSTEM_VERSION }}" -DBUILD_BROWSER=false -DBUILD_VST=false -DBUILD_VIRTUALCAM=false -DBUILD_CAPTIONS=false -DCOMPILE_D3D12_HOOK=false -DENABLE_SCRIPTING=false -DDepsPath="${{ github.workspace }}/cmbuild/deps/win64" -DQTDIR="${{ github.workspace }}/cmbuild/QT/${{ env.QT_VERSION }}/msvc2019_64" -DCOPIED_DEPENDENCIES=FALSE -DCOPY_DEPENDENCIES=TRUE ..
       - name: "Build 32-bit"
+        if: github.event_name != 'pull_request'
         run: cmake --build build32 -t ${{ env.PLUGIN_NAME }} --config RelWithDebInfo
       - name: "Build 64-bit"
         run: cmake --build build64 -t ${{ env.PLUGIN_NAME }} --config RelWithDebInfo
@@ -81,6 +84,7 @@ jobs:
         run: |
           $env:FILE_DATE=(Get-Date -UFormat "%F")
           $env:FILE_NAME="${{ env.PLUGIN_NAME }}-${env:FILE_DATE}-${{ github.sha }}-windows"
+          mkdir ./package
           echo "FILE_NAME=${env:FILE_NAME}" >> ${env:GITHUB_ENV}
           robocopy .\build32\plugins\${{env.PLUGIN_NAME}}\RelWithDebInfo\ .\package\obs-plugins\32bit ${{ env.PLUGIN_NAME }}.* /E /XF .gitignore
           robocopy .\build64\plugins\${{env.PLUGIN_NAME}}\RelWithDebInfo\ .\package\obs-plugins\64bit ${{ env.PLUGIN_NAME }}.* /E /XF .gitignore
