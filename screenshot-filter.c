@@ -2,8 +2,11 @@
 #include <windows.h>
 #include <wininet.h>
 #include <obs-module.h>
+#include <util/platform.h>
+#include <../UI/obs-frontend-api/obs-frontend-api.h>
 #else
 #include <obs-module.h>
+#include <../UI/obs-frontend-api/obs-frontend-api.h>
 #include <pthread.h>
 #include <util/platform.h>
 #include <util/threading.h>
@@ -82,8 +85,11 @@ struct screenshot_filter_data {
 	bool raw;
 	int timer_shown;
 	uint64_t at_shown_next_ns;
+	int timer_previewed;
+	uint64_t at_previewed_next_ns;
 	int timer_activated;
 	uint64_t at_activated_next_ns;
+	bool is_preview, was_preview;
 	obs_hotkey_id capture_hotkey_id;
 
 	float since_last;
@@ -253,6 +259,14 @@ static bool at_shown_modified(obs_properties_t *props, obs_property_t *unused, o
 	return true;
 }
 
+static bool at_previewed_modified(obs_properties_t *props, obs_property_t *unused, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(unused);
+	bool en = settings ? obs_data_get_bool(settings, "at_previewed") : false;
+	obs_property_set_visible(obs_properties_get(props, "timer_previewed"), en);
+	return true;
+}
+
 static bool at_activated_modified(obs_properties_t *props, obs_property_t *unused, obs_data_t *settings)
 {
 	UNUSED_PARAMETER(unused);
@@ -320,6 +334,10 @@ static obs_properties_t *screenshot_filter_properties(void *data)
 	p = obs_properties_add_bool(props, "at_shown", "Screenshot at shown");
 	obs_property_set_modified_callback(p, at_shown_modified);
 	obs_properties_add_int(props, "timer_shown", "Timer after shown [s]", 0, 10, 1);
+
+	p = obs_properties_add_bool(props, "at_previewed", "Screenshot at displayed on Preview");
+	obs_property_set_modified_callback(p, at_previewed_modified);
+	obs_properties_add_int(props, "timer_previewed", "Timer after displayed [s]", 0, 10, 1);
 
 	p = obs_properties_add_bool(props, "at_activated", "Screenshot at displayed on Program");
 	obs_property_set_modified_callback(p, at_activated_modified);
@@ -394,6 +412,9 @@ static void screenshot_filter_update(void *data, obs_data_t *settings)
 	bool at_shown = obs_data_get_bool(settings, "at_shown");
 	filter->timer_shown = at_shown ? obs_data_get_int(settings, "timer_shown") : -1;
 
+	bool at_previewed = obs_data_get_bool(settings, "at_previewed");
+	filter->timer_previewed = at_previewed ? obs_data_get_int(settings, "timer_previewed") : -1;
+
 	bool at_activated = obs_data_get_bool(settings, "at_activated");
 	filter->timer_activated = at_activated ? obs_data_get_int(settings, "timer_activated") : -1;
 
@@ -403,6 +424,9 @@ static void screenshot_filter_update(void *data, obs_data_t *settings)
 
 	ReleaseMutex(filter->mutex);
 }
+
+static void check_notify_preview(struct screenshot_filter_data *);
+static void on_preview_scene_changed(enum obs_frontend_event event, void *param);
 
 static void screenshot_filter_shown(void *data)
 {
@@ -416,8 +440,82 @@ static void screenshot_filter_shown(void *data)
 	WaitForSingleObject(filter->mutex, INFINITE);
 	if (!filter->at_shown_next_ns) {
 		filter->at_shown_next_ns = cur_ns + filter->timer_shown * 1000000000ULL;
+		blog(LOG_INFO, "at_shown_next_ns=%lld", filter->at_shown_next_ns);
 	}
 	ReleaseMutex(filter->mutex);
+
+	check_notify_preview(filter);
+}
+
+static void screenshot_filter_previewed(void *data)
+{
+	struct screenshot_filter_data *filter = data;
+
+	if (filter->timer_previewed < 0)
+		return;
+
+	uint64_t cur_ns = os_gettime_ns();
+
+	WaitForSingleObject(filter->mutex, INFINITE);
+	if (!filter->at_previewed_next_ns) {
+		filter->at_previewed_next_ns = cur_ns + filter->timer_previewed * 1000000000ULL;
+		blog(LOG_INFO, "at_previewed_next_ns=%lld", filter->at_previewed_next_ns);
+	}
+	ReleaseMutex(filter->mutex);
+}
+
+struct preview_callback_s
+{
+	obs_source_t *src;
+	bool is_preview;
+};
+
+static void preview_callback(obs_source_t *parent, obs_source_t *child, void *param)
+{
+	UNUSED_PARAMETER(parent);
+	struct preview_callback_s *cb_data = param;
+	if (child == cb_data->src)
+		cb_data->is_preview = true;
+}
+
+static void check_notify_preview(struct screenshot_filter_data *filter)
+{
+	if (obs_source_enabled(filter->context)) {
+		obs_source_t* preview_soure = obs_frontend_get_current_preview_scene();
+		if (preview_soure) {
+			struct preview_callback_s cb_data = {
+				.src = obs_filter_get_parent(filter->context),
+				.is_preview = false
+			};
+			if (preview_soure==cb_data.src)
+				cb_data.is_preview = true;
+			else
+				obs_source_enum_active_sources(preview_soure, preview_callback, &cb_data);
+			obs_source_release(preview_soure);
+			filter->is_preview = cb_data.is_preview;
+		}
+		else
+			filter->is_preview = false;
+	}
+	else
+		filter->is_preview = false;
+
+	if (filter->is_preview && !filter->was_preview)
+		screenshot_filter_previewed(filter);
+	filter->was_preview = filter->is_preview;
+}
+
+static void on_preview_scene_changed(enum obs_frontend_event event, void *param)
+{
+	struct screenshot_filter_data *filter = param;
+	switch (event) {
+		case OBS_FRONTEND_EVENT_STUDIO_MODE_ENABLED:
+		case OBS_FRONTEND_EVENT_PREVIEW_SCENE_CHANGED:
+		case OBS_FRONTEND_EVENT_STUDIO_MODE_DISABLED:
+		case OBS_FRONTEND_EVENT_SCENE_CHANGED:
+			check_notify_preview(filter);
+			break;
+	}
 }
 
 static void screenshot_filter_activated(void *data)
@@ -432,6 +530,7 @@ static void screenshot_filter_activated(void *data)
 	WaitForSingleObject(filter->mutex, INFINITE);
 	if (!filter->at_activated_next_ns) {
 		filter->at_activated_next_ns = cur_ns + filter->timer_activated * 1000000000ULL;
+		blog(LOG_INFO, "at_activated_next_ns=%lld", filter->at_activated_next_ns);
 	}
 	ReleaseMutex(filter->mutex);
 }
@@ -446,6 +545,7 @@ static void *screenshot_filter_create(obs_data_t *settings,
 
 	filter->context = context;
 	filter->timer_shown = -1;
+	filter->timer_previewed = -1;
 	filter->timer_activated = -1;
 
 	obs_enter_graphics();
@@ -478,6 +578,8 @@ static void *screenshot_filter_create(obs_data_t *settings,
 #endif
 
 	obs_source_update(context, settings);
+
+	obs_frontend_add_event_callback(on_preview_scene_changed, filter);
 
 	return filter;
 }
@@ -535,8 +637,10 @@ static void screenshot_filter_load(void *data, obs_data_t *settings)
 static void screenshot_filter_destroy(void *data)
 {
 	struct screenshot_filter_data *filter = data;
-
 	filter->exit = true;
+
+	obs_frontend_remove_event_callback(on_preview_scene_changed, filter);
+
 	for (int _ = 0; _ < 500 && !filter->exited; ++_) {
 		Sleep(10);
 	}
@@ -682,6 +786,14 @@ static void screenshot_filter_tick(void *data, float t)
 		if (ns >= 0) {
 			filter->capture = true;
 			filter->at_shown_next_ns = 0;
+		}
+	}
+
+	if (filter->at_previewed_next_ns) {
+		int64_t ns = (int64_t)(os_gettime_ns() - filter->at_previewed_next_ns);
+		if (ns >= 0) {
+			filter->capture = true;
+			filter->at_previewed_next_ns = 0;
 		}
 	}
 

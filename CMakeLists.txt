@@ -13,6 +13,7 @@ add_library(obs-screenshot-filter-jpeg MODULE
 if(WIN32)
 target_link_libraries(obs-screenshot-filter-jpeg
       libobs
+      obs-frontend-api
       wininet.lib
       ${obs-ffmpeg_PLATFORM_DEPS}
       ${FFMPEG_LIBRARIES}
