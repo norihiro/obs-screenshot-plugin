@@ -40,7 +40,7 @@ static void capture_key_callback(void *data, obs_hotkey_id id,
 struct screenshot_filter_data;
 static bool write_image(struct screenshot_filter_data *filter, uint8_t *image_data_ptr,
 			int image_data_linesize, uint32_t width, uint32_t height);
-static bool write_data(const char *destination, uint8_t *data, size_t len,
+static bool write_data(struct screenshot_filter_data *filter, const char *destination, uint8_t *data, size_t len,
 		       const char *content_type, uint32_t width, uint32_t height,
 		       int destination_type);
 
@@ -94,6 +94,9 @@ struct screenshot_filter_data {
 
 	char *text_src_name;
 	int text_src_last_sec;
+
+	char *img_src_name;
+	char *switch_scene_name;
 
 	float since_last;
 	bool capture;
@@ -175,7 +178,7 @@ static void *write_images_thread(void *filter_)
 			} else
 #endif
 			if (raw)
-				write_data(destination, data, linesize * height,
+				write_data(filter, destination, data, linesize * height,
 					   "image/rgba32", width, height,
 					   destination_type);
 			else
@@ -310,6 +313,33 @@ static bool add_text_source_to_property(void *data, obs_source_t *source)
 	return true;
 }
 
+static bool is_image_source_id(const char *srcId)
+{
+	if (!strcmp(srcId, "image_source")) return true;
+	return false;
+}
+
+static bool add_image_source_to_property(void *data, obs_source_t *source)
+{
+	obs_property_t *p = data;
+	const char *srcId = obs_source_get_id(source);
+	if (!is_image_source_id(srcId))
+		return true;
+
+	const char *name = obs_source_get_name(source);
+	obs_property_list_add_string(p, name, name);
+	return true;
+}
+
+static bool add_scene_to_property(void *data, obs_source_t *source)
+{
+	obs_property_t *p = data;
+
+	const char *name = obs_source_get_name(source);
+	obs_property_list_add_string(p, name, name);
+	return true;
+}
+
 static obs_properties_t *screenshot_filter_properties(void *data)
 {
 	UNUSED_PARAMETER(data);
@@ -377,6 +407,15 @@ static obs_properties_t *screenshot_filter_properties(void *data)
 	obs_property_set_modified_callback(p, resize_modified);
 	obs_properties_add_int(props, "resize_w", "Width", 16, 8192, 1);
 	obs_properties_add_int(props, "resize_h", "Height", 16, 8192, 1);
+
+	p = obs_properties_add_list(props, "img_src_name", "Set image source", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(p, "(Disabled)", "");
+	obs_enum_sources(add_image_source_to_property, p);
+
+	p = obs_properties_add_list(props, "switch_scene_name", "Switch scene to", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(p, "(Disabled)", "");
+	// TODO: use obs_frontend_get_scenes
+	obs_enum_scenes(add_scene_to_property, p);
 
 	return props;
 }
@@ -454,6 +493,11 @@ static void screenshot_filter_update(void *data, obs_data_t *settings)
 	bool resize = obs_data_get_bool(settings, "resize");
 	filter->resize_w = resize ? (uint32_t)obs_data_get_int(settings, "resize_w") : 0;
 	filter->resize_h = resize ? (uint32_t)obs_data_get_int(settings, "resize_h") : 0;
+
+	bfree(filter->img_src_name);
+	filter->img_src_name = bstrdup(obs_data_get_string(settings, "img_src_name"));
+	bfree(filter->switch_scene_name);
+	filter->switch_scene_name = bstrdup(obs_data_get_string(settings, "switch_scene_name"));
 
 	ReleaseMutex(filter->mutex);
 }
@@ -710,6 +754,8 @@ static void screenshot_filter_destroy(void *data)
 
 	bfree(filter->destination);
 	bfree(filter->text_src_name);
+	bfree(filter->img_src_name);
+	bfree(filter->switch_scene_name);
 
 	bfree(filter);
 }
@@ -1024,7 +1070,7 @@ static bool write_image(struct screenshot_filter_data *filter, uint8_t *image_da
 	int got_output = 0;
 	ret = avcodec_encode_video2(codec_context, &pkt, frame, &got_output);
 	if (ret == 0 && got_output) {
-		success = write_data(filter->destination, pkt.data, pkt.size,
+		success = write_data(filter, filter->destination, pkt.data, pkt.size,
 				     "image/jpeg", cwidth, cheight,
 				     filter->destination_type);
 		av_free_packet(&pkt);
@@ -1058,7 +1104,36 @@ err_no_image_data:
 	return success;
 }
 
-static bool write_data(const char *destination, uint8_t *data, size_t len,
+notify_to_image_source(struct screenshot_filter_data *filter, const char *filename)
+{
+	obs_source_t *img_src = NULL;
+	obs_source_t *scene_src = NULL;
+
+	WaitForSingleObject(filter->mutex, INFINITE);
+	if (filter->img_src_name)
+		img_src = obs_get_source_by_name(filter->img_src_name);
+	if (filter->switch_scene_name)
+		scene_src = obs_get_source_by_name(filter->switch_scene_name);
+	ReleaseMutex(filter->mutex);
+
+	if (img_src) {
+		obs_data_t *settings = obs_source_get_settings(img_src);
+		obs_data_set_string(settings, "file", filename);
+		obs_source_update(img_src, settings);
+		obs_data_release(settings);
+		obs_source_release(img_src);
+	}
+
+	Sleep(34);
+
+	if (scene_src) {
+		obs_frontend_set_current_scene(scene_src);
+		obs_source_release(scene_src);
+	}
+}
+
+
+static bool write_data(struct screenshot_filter_data *filter, const char *destination, uint8_t *data, size_t len,
 		       const char *content_type, uint32_t width, uint32_t height,
 		       int destination_type)
 {
@@ -1148,6 +1223,8 @@ static bool write_data(const char *destination, uint8_t *data, size_t len,
 					fwrite(data, 1, len, of);
 					fclose(of);
 					success = true;
+					if (filter)
+						notify_to_image_source(filter, file_destination);
 					break;
 				}
 			}
