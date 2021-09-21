@@ -92,6 +92,9 @@ struct screenshot_filter_data {
 	bool is_preview, was_preview;
 	obs_hotkey_id capture_hotkey_id;
 
+	char *text_src_name;
+	int text_src_last_sec;
+
 	float since_last;
 	bool capture;
 
@@ -285,6 +288,28 @@ static bool resize_modified(obs_properties_t *props, obs_property_t *unused, obs
 	return true;
 }
 
+static bool is_text_source_id(const char *srcId)
+{
+	if (!strcmp(srcId, "text_gdiplus")) return true;
+	if (!strcmp(srcId, "text_gdiplus_v2")) return true;
+	if (!strcmp(srcId, "text_ft2_source")) return true;
+	if (!strcmp(srcId, "text_ft2_source_v2")) return true;
+	if (!strcmp(srcId, "obs_text_pthread_source")) return true;
+	return false;
+}
+
+static bool add_text_source_to_property(void *data, obs_source_t *source)
+{
+	obs_property_t *p = data;
+	const char *srcId = obs_source_get_id(source);
+	if (!is_text_source_id(srcId))
+		return true;
+
+	const char *name = obs_source_get_name(source);
+	obs_property_list_add_string(p, name, name);
+	return true;
+}
+
 static obs_properties_t *screenshot_filter_properties(void *data)
 {
 	UNUSED_PARAMETER(data);
@@ -343,6 +368,10 @@ static obs_properties_t *screenshot_filter_properties(void *data)
 	p = obs_properties_add_bool(props, "at_activated", "Screenshot at displayed on Program");
 	obs_property_set_modified_callback(p, at_activated_modified);
 	obs_properties_add_int(props, "timer_activated", "Timer after displayed [s]", 0, 10, 1);
+
+	p = obs_properties_add_list(props, "text_src_name", "Countdown text", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(p, "(Disabled)", "");
+	obs_enum_sources(add_text_source_to_property, p);
 
 	p = obs_properties_add_bool(props, "resize", "Resize");
 	obs_property_set_modified_callback(p, resize_modified);
@@ -418,6 +447,9 @@ static void screenshot_filter_update(void *data, obs_data_t *settings)
 
 	bool at_activated = obs_data_get_bool(settings, "at_activated");
 	filter->timer_activated = at_activated ? (int)obs_data_get_int(settings, "timer_activated") : -1;
+
+	bfree(filter->text_src_name);
+	filter->text_src_name = bstrdup(obs_data_get_string(settings, "text_src_name"));
 
 	bool resize = obs_data_get_bool(settings, "resize");
 	filter->resize_w = resize ? (uint32_t)obs_data_get_int(settings, "resize_w") : 0;
@@ -677,6 +709,7 @@ static void screenshot_filter_destroy(void *data)
 #endif
 
 	bfree(filter->destination);
+	bfree(filter->text_src_name);
 
 	bfree(filter);
 }
@@ -783,13 +816,18 @@ static void screenshot_filter_tick(void *data, float t)
 		}
 	}
 
+	int64_t next_ns = 0x8000000000000000LL;
+
 	if (filter->at_shown_next_ns) {
 		int64_t ns = (int64_t)(os_gettime_ns() - filter->at_shown_next_ns);
 		if (ns >= 0) {
 			filter->capture = true;
 			filter->at_shown_next_ns = 0;
 			blog(LOG_INFO, "request capture at shown");
+			next_ns = 0;
 		}
+		else if (ns > next_ns)
+			next_ns = ns;
 	}
 
 	if (filter->at_previewed_next_ns) {
@@ -798,7 +836,10 @@ static void screenshot_filter_tick(void *data, float t)
 			filter->capture = true;
 			filter->at_previewed_next_ns = 0;
 			blog(LOG_INFO, "request capture at preview");
+			next_ns = 0;
 		}
+		else if (ns > next_ns)
+			next_ns = ns;
 	}
 
 	if (filter->at_activated_next_ns) {
@@ -807,6 +848,28 @@ static void screenshot_filter_tick(void *data, float t)
 			filter->capture = true;
 			filter->at_activated_next_ns = 0;
 			blog(LOG_INFO, "request capture at activated");
+			next_ns = 0;
+		}
+		else if (ns > next_ns)
+			next_ns = ns;
+	}
+
+	if (filter->text_src_name && *filter->text_src_name) {
+		int sec =
+			next_ns>=0 ? 0 :
+			next_ns==0x8000000000000000LL ? 0 :
+			(int)((-next_ns + 999999999) / 1000000000LL);
+		if (filter->text_src_last_sec != sec) {
+			const char sz[16] = {0};
+			if (sec)
+				snprintf(sz, sizeof(sz)-1, "%d", sec);
+			obs_source_t *src = obs_get_source_by_name(filter->text_src_name);
+			obs_data_t *settings = obs_source_get_settings(src);
+			obs_data_set_string(settings, "text", sz);
+			obs_source_update(src, settings);
+			obs_data_release(settings);
+			obs_source_release(src);
+			filter->text_src_last_sec = sec;
 		}
 	}
 
