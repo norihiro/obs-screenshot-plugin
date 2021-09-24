@@ -901,9 +901,10 @@ static void screenshot_filter_tick(void *data, float t)
 	}
 
 	if (filter->text_src_name && *filter->text_src_name) {
+		int64_t th_2frame_ns = (int64_t)(-t * 2e9f);
 		int sec =
-			next_ns>=0 ? 0 :
 			next_ns==0x8000000000000000LL ? 0 :
+			next_ns>=th_2frame_ns ? 0 :
 			(int)((-next_ns + 999999999) / 1000000000LL);
 		if (filter->text_src_last_sec != sec) {
 			const char sz[16] = {0};
