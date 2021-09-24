@@ -1104,7 +1104,7 @@ err_no_image_data:
 	return success;
 }
 
-notify_to_image_source(struct screenshot_filter_data *filter, const char *filename)
+static void notify_to_image_source(struct screenshot_filter_data *filter, const char *filename)
 {
 	obs_source_t *img_src = NULL;
 	obs_source_t *scene_src = NULL;
