@@ -5,7 +5,7 @@ on:
     branches: [ master, jpeg ]
   pull_request:
     branches: [ master, jpeg ]
-
+runs-on: self-hosted
 env:
   PLUGIN_NAME: obs-screenshot-filter-jpeg
   OBS_VERSION: 27.0.1
