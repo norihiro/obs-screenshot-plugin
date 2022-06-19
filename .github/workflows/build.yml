@@ -2,9 +2,9 @@ name: build obs plugin
 
 on:
   push:
-    branches: [ master, jpeg ]
+    branches: [ master, jpeg, dev ]
   pull_request:
-    branches: [ master, jpeg ]
+    branches: [ master, jpeg, dev ]
 
 env:
   PLUGIN_NAME: obs-screenshot-filter-jpeg
